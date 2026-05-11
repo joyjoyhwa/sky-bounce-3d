@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Three.js and cannon-es powered 3D bounce ball web game."
+    />
+    <title>Sky Bounce 3D</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="game-shell" aria-label="Sky Bounce 3D">
+      <canvas id="scene" aria-label="3D game canvas"></canvas>
+
+      <section class="hud" aria-label="game status">
+        <div class="stat">
+          <span>점수</span>
+          <strong id="score">000000</strong>
+        </div>
+        <div class="stat">
+          <span>최고</span>
+          <strong id="best">000000</strong>
+        </div>
+        <div class="stat compact">
+          <span>링</span>
+          <strong id="rings">0</strong>
+        </div>
+        <div class="stat compact">
+          <span>속도</span>
+          <strong id="speed">0</strong>
+        </div>
+        <button
+          class="icon-button"
+          id="pauseButton"
+          type="button"
+          aria-label="pause"
+          title="pause"
+        >
+          <span aria-hidden="true">||</span>
+        </button>
+      </section>
+
+      <section class="touch-controls" aria-label="touch controls">
+        <button class="touch-button forward" id="forwardControl" type="button" aria-label="forward">
+          <span aria-hidden="true">&#8593;</span>
+        </button>
+        <button class="touch-button" id="leftControl" type="button" aria-label="left">
+          <span aria-hidden="true">&#8592;</span>
+        </button>
+        <button class="touch-button back" id="backControl" type="button" aria-label="back">
+          <span aria-hidden="true">&#8595;</span>
+        </button>
+        <button class="touch-button lift" id="jumpControl" type="button" aria-label="bounce">
+          <span aria-hidden="true">+</span>
+        </button>
+        <button class="touch-button" id="rightControl" type="button" aria-label="right">
+          <span aria-hidden="true">&#8594;</span>
+        </button>
+      </section>
+
+      <section class="overlay open" id="overlay" aria-live="polite">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="overlayTitle">
+          <p class="eyebrow" id="overlayEyebrow">3D ARCADE</p>
+          <h1 id="overlayTitle">Sky Bounce</h1>
+          <p id="overlayText">앞뒤 속도를 조절하며 링을 노리세요.</p>
+          <button class="primary-button" id="startButton" type="button">플레이</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
