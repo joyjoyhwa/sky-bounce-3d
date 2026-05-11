@@ -39,6 +39,11 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
+button:disabled {
+  cursor: default;
+  opacity: 0.46;
+}
+
 .game-shell {
   position: fixed;
   inset: 0;
@@ -83,15 +88,70 @@ button {
   border-color: rgba(255, 255, 255, 0.55);
 }
 
+.countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 12, 20, 0);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 180ms ease,
+    background 260ms ease;
+}
+
+.countdown.open {
+  opacity: 1;
+  background: rgba(8, 12, 20, 0.14);
+}
+
+.countdown span {
+  display: grid;
+  width: clamp(96px, 18vw, 150px);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 50%;
+  background: rgba(10, 13, 20, 0.28);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
+  color: #ffffff;
+  font-size: clamp(54px, 12vw, 104px);
+  font-weight: 950;
+  line-height: 1;
+  backdrop-filter: blur(6px);
+  transform: scale(0.72);
+}
+
+.countdown.open span.tick {
+  animation: countPop 760ms ease both;
+}
+
+@keyframes countPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.62);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0.88;
+    transform: scale(1);
+  }
+}
+
 .hud {
   position: absolute;
   top: max(16px, env(safe-area-inset-top));
   left: 50%;
   z-index: 5;
   display: grid;
-  grid-template-columns: minmax(104px, auto) minmax(104px, auto) minmax(68px, auto) minmax(76px, auto) 44px;
+  grid-template-columns: minmax(104px, auto) minmax(104px, auto) minmax(68px, auto) minmax(76px, auto) 44px 44px;
   gap: 8px;
-  width: min(720px, calc(100% - 24px));
+  width: min(780px, calc(100% - 24px));
   transform: translateX(-50%);
   pointer-events: none;
 }
@@ -139,6 +199,10 @@ button {
   border-radius: 50%;
   color: var(--cyan);
   pointer-events: auto;
+}
+
+.end-button {
+  color: var(--coral);
 }
 
 .icon-button:focus-visible,
@@ -283,7 +347,7 @@ h1 {
 
 @media (max-width: 680px) {
   .hud {
-    grid-template-columns: 1fr 1fr 0.72fr 0.72fr 44px;
+    grid-template-columns: 1fr 1fr 0.72fr 0.72fr 42px 42px;
     gap: 6px;
     width: calc(100% - 16px);
   }
@@ -304,7 +368,7 @@ h1 {
 
 @media (max-width: 440px) {
   .hud {
-    grid-template-columns: 1fr 1fr 42px;
+    grid-template-columns: 1fr 1fr 42px 42px;
   }
 
   .stat.compact {
