@@ -7,6 +7,7 @@ const ui = {
   best: document.querySelector("#best"),
   rings: document.querySelector("#rings"),
   speed: document.querySelector("#speed"),
+  dimensionBanner: document.querySelector("#dimensionBanner"),
   overlay: document.querySelector("#overlay"),
   overlayEyebrow: document.querySelector("#overlayEyebrow"),
   overlayTitle: document.querySelector("#overlayTitle"),
@@ -31,6 +32,8 @@ const STEER_SPEED = 7.65;
 const LANDING_EDGE_MARGIN = BALL_RADIUS * 0.18;
 const NORMAL_BOUNCE = 9.35;
 const BOOST_BOUNCE = 13.65;
+const SHIFT_DURATION = 11;
+const SHIFT_PLANE_DEPTH = 0.78;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -71,6 +74,17 @@ const state = {
   score: 0,
   best: readBestScore(),
   rings: 0,
+  shiftCoins: 0,
+  shiftBonus: 0,
+  multiplier: 1,
+  multiplierEndsAt: 0,
+  dimension: "3d",
+  shiftEndsAt: 0,
+  shiftEntryZ: 0,
+  shiftPlaneZ: 0,
+  shiftResumeZ: 0,
+  shiftFinishX: 0,
+  shiftCooldownUntil: 0,
   speed: BASE_SPEED,
   distance: 0,
   seed: 1,
@@ -93,7 +107,11 @@ const input = {
 
 const platforms = [];
 const pickups = [];
+const shiftOrbs = [];
 const hazards = [];
+const shiftPlatforms = [];
+const shiftCoins = [];
+const shiftHazards = [];
 const bursts = [];
 const trail = [];
 
@@ -157,6 +175,27 @@ const materials = {
     roughness: 0.36,
     metalness: 0.58,
   }),
+  shiftOrb: new THREE.MeshStandardMaterial({
+    color: 0x9b8cff,
+    emissive: 0x573cff,
+    emissiveIntensity: 1.12,
+    roughness: 0.18,
+    metalness: 0.42,
+  }),
+  shiftPlatform: new THREE.MeshStandardMaterial({
+    color: 0x1c2b48,
+    emissive: 0x111b3a,
+    emissiveIntensity: 0.35,
+    roughness: 0.5,
+    metalness: 0.18,
+  }),
+  shiftCoin: new THREE.MeshStandardMaterial({
+    color: 0x47e6cf,
+    emissive: 0x18d6ce,
+    emissiveIntensity: 1,
+    roughness: 0.26,
+    metalness: 0.48,
+  }),
   hazard: new THREE.MeshStandardMaterial({
     color: 0xff4668,
     emissive: 0x7d0820,
@@ -205,6 +244,10 @@ const ballBody = new CANNON.Body({
   angularDamping: 0.14,
 });
 world.addBody(ballBody);
+
+const shiftRoot = new THREE.Group();
+shiftRoot.visible = false;
+scene.add(shiftRoot);
 
 setupEnvironment();
 setupTrail();
@@ -374,17 +417,31 @@ function tick(time) {
 }
 
 function updateGame(delta) {
+  if (state.multiplier > 1 && state.elapsed > state.multiplierEndsAt) {
+    state.multiplier = 1;
+  }
+
+  if (state.dimension === "shift2d") {
+    updateShiftMode(delta);
+  } else {
+    updateRunMode(delta);
+  }
+
+  updateBallVisual(delta);
+  updateBursts(delta);
+  updateTrail(delta);
+  updateHud();
+}
+
+function updateRunMode(delta) {
   state.previousBallY = ballBody.position.y;
   handleControls(delta);
   world.step(1 / 60, delta, 3);
   resolveVisibleLanding();
-  updateBallVisual(delta);
   updateTrack();
   updatePickups(delta);
+  updateShiftOrbs(delta);
   updateHazards(delta);
-  updateBursts(delta);
-  updateTrail(delta);
-  updateHud();
 
   if (ballBody.position.y < -10 || Math.abs(ballBody.position.x) > 11) {
     endGame("fall");
@@ -421,6 +478,120 @@ function handleControls(delta) {
     ballVisual.squash = Math.max(ballVisual.squash, 0.62);
     state.boostQueuedAt = -10;
     createBurst(ballBody.position, 0xff6b6b);
+  }
+}
+
+function updateShiftMode(delta) {
+  state.previousBallY = ballBody.position.y;
+  handleShiftControls(delta);
+  world.step(1 / 60, delta, 3);
+  ballBody.position.z = state.shiftPlaneZ;
+  ballBody.velocity.z = 0;
+  resolveShiftLanding();
+  updateShiftCoins(delta);
+  updateShiftHazards(delta);
+
+  if (ballBody.position.y < -5.8) {
+    exitShiftMode("fall");
+    return;
+  }
+
+  if (ballBody.position.x >= state.shiftFinishX) {
+    exitShiftMode("complete");
+    return;
+  }
+
+  if (state.elapsed >= state.shiftEndsAt) {
+    exitShiftMode("timeout");
+  }
+}
+
+function handleShiftControls(delta) {
+  const steer = Number(input.right) - Number(input.left);
+  const thrust = Number(input.forward) - Number(input.back);
+  const targetX = THREE.MathUtils.clamp(4.65 + steer * 2.15 + thrust * 1.25, 2.15, 7.15);
+  const blend = 1 - Math.pow(0.00004, delta);
+  ballBody.velocity.x += (targetX - ballBody.velocity.x) * blend;
+  ballBody.velocity.z += (0 - ballBody.velocity.z) * blend;
+  state.speed = ballBody.velocity.x;
+
+  const queuedRecently = state.elapsed - state.boostQueuedAt < 0.16;
+  const groundedRecently = state.elapsed - state.lastGroundedAt < 0.24;
+  if (queuedRecently && groundedRecently) {
+    ballBody.velocity.y = Math.max(ballBody.velocity.y, 12.2);
+    ballVisual.squash = Math.max(ballVisual.squash, 0.62);
+    state.boostQueuedAt = -10;
+    createBurst(ballBody.position, 0x47e6cf);
+  }
+}
+
+function resolveShiftLanding() {
+  const previousBottom = state.previousBallY - BALL_RADIUS;
+  const currentBottom = ballBody.position.y - BALL_RADIUS;
+  const movingDown = ballBody.velocity.y <= 1.2;
+  const canBounce = state.elapsed - state.lastBounceAt > 0.13;
+
+  if (!movingDown || !canBounce) {
+    return;
+  }
+
+  let landing = null;
+  for (const platform of shiftPlatforms) {
+    const top = platform.y + platform.height / 2;
+    const crossedTop = previousBottom >= top - 0.08 && currentBottom <= top + 0.14;
+    const stillCatchable = ballBody.position.y >= top - 0.08 && currentBottom <= top;
+    const withinX =
+      Math.abs(ballBody.position.x - platform.x) <= platform.width / 2 + LANDING_EDGE_MARGIN;
+
+    if ((crossedTop || stillCatchable) && withinX) {
+      landing = platform;
+      break;
+    }
+  }
+
+  if (!landing) {
+    return;
+  }
+
+  const top = landing.y + landing.height / 2;
+  ballBody.position.y = top + BALL_RADIUS;
+  const lift = landing.kind === "boost" ? 13.4 : 9.05;
+  ballBody.velocity.y = Math.max(ballBody.velocity.y, lift);
+  state.lastBounceAt = state.elapsed;
+  state.lastGroundedAt = state.elapsed;
+  ballVisual.squash = Math.max(ballVisual.squash, landing.kind === "boost" ? 0.95 : 0.62);
+  createBurst(ballBody.position, landing.kind === "boost" ? 0x47e6cf : 0x9b8cff);
+}
+
+function updateShiftCoins(delta) {
+  const ball = reusable.ballPosition.set(ballBody.position.x, ballBody.position.y, state.shiftPlaneZ);
+  for (const coin of shiftCoins) {
+    if (coin.collected) {
+      continue;
+    }
+    coin.mesh.rotation.z += delta * 3.3;
+    coin.mesh.position.y = coin.baseY + Math.sin(state.elapsed * 4.2 + coin.phase) * 0.08;
+    if (coin.mesh.position.distanceTo(ball) < 0.72) {
+      coin.collected = true;
+      coin.mesh.visible = false;
+      state.shiftCoins += 1;
+      state.shiftBonus += 85 * state.multiplier;
+      createBurst(coin.mesh.position, 0x47e6cf);
+    }
+  }
+}
+
+function updateShiftHazards(delta) {
+  for (const hazard of shiftHazards) {
+    hazard.mesh.rotation.z += delta * 1.5;
+    const hit =
+      Math.abs(ballBody.position.x - hazard.x) <= hazard.width / 2 &&
+      Math.abs(ballBody.position.y - hazard.y) <= hazard.height / 2;
+    if (hit) {
+      createBurst(ballBody.position, 0xff4668);
+      exitShiftMode("hit");
+      break;
+    }
   }
 }
 
@@ -518,6 +689,10 @@ function updateTrack() {
     scene.remove(item.mesh);
     disposeObject(item.mesh);
   });
+  removeBehind(shiftOrbs, cutoff, (item) => {
+    scene.remove(item.group);
+    disposeObject(item.group);
+  });
   removeBehind(hazards, cutoff, (item) => {
     scene.remove(item.group);
     disposeObject(item.group);
@@ -537,6 +712,31 @@ function updatePickups(delta) {
       pickup.mesh.visible = false;
       state.rings += 1;
       createBurst(pickup.mesh.position, 0xffd166);
+    }
+  }
+}
+
+function updateShiftOrbs(delta) {
+  if (state.elapsed < state.shiftCooldownUntil) {
+    return;
+  }
+
+  const ball = reusable.ballPosition.set(ballBody.position.x, ballBody.position.y, ballBody.position.z);
+  for (const orb of shiftOrbs) {
+    if (orb.collected) {
+      continue;
+    }
+    orb.group.rotation.y += delta * 1.8;
+    orb.group.rotation.z -= delta * 0.72;
+    orb.group.position.y = orb.baseY + Math.sin(state.elapsed * 3.5 + orb.phase) * 0.16;
+    const dx = Math.abs(orb.group.position.x - ball.x);
+    const dy = Math.abs(orb.group.position.y - ball.y);
+    const dz = Math.abs(orb.group.position.z - ball.z);
+    if (dx < 1.08 && dz < 1.18 && dy < 1.8) {
+      orb.collected = true;
+      orb.group.visible = false;
+      enterShiftMode(orb.group.position);
+      break;
     }
   }
 }
@@ -613,6 +813,23 @@ function idleMotion(seconds) {
 
 function updateCamera(delta) {
   const smooth = 1 - Math.pow(0.000001, delta);
+  if (state.dimension === "shift2d") {
+    reusable.cameraTarget.set(
+      ballMesh.position.x + 3.1,
+      Math.max(3.4, ballMesh.position.y + 2.2),
+      state.shiftPlaneZ + 16.5,
+    );
+    camera.position.lerp(reusable.cameraTarget, smooth);
+
+    reusable.lookTarget.set(
+      ballMesh.position.x + 3.5,
+      Math.max(1.25, ballMesh.position.y + 0.45),
+      state.shiftPlaneZ,
+    );
+    camera.lookAt(reusable.lookTarget);
+    return;
+  }
+
   reusable.cameraTarget.set(
     ballMesh.position.x * 0.52,
     Math.max(4.2, ballMesh.position.y + 5.6),
@@ -648,6 +865,10 @@ function createNextSegment() {
   const depth = kind === "boost" ? 5.08 : 4.72;
 
   createPlatform(x, z, width, depth, kind, index);
+
+  if (index === 2 || index === 5 || (index > 8 && index % 15 === 9)) {
+    createShiftOrb(x, z - 0.35);
+  }
 
   if (index > 2 && random() < 0.74) {
     createPickup(x + (random() - 0.5) * 1.2, z + (random() - 0.5) * 1.8);
@@ -735,6 +956,33 @@ function createPickup(x, z) {
   });
 }
 
+function createShiftOrb(x, z) {
+  const group = new THREE.Group();
+  group.position.set(x, 1.24, z);
+
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.38, 1), materials.shiftOrb);
+  core.castShadow = true;
+  group.add(core);
+
+  const ringA = new THREE.Mesh(new THREE.TorusGeometry(0.58, 0.035, 12, 42), materials.shiftCoin);
+  ringA.rotation.x = Math.PI / 2;
+  group.add(ringA);
+
+  const ringB = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.025, 12, 42), materials.shiftOrb);
+  ringB.rotation.y = Math.PI / 2;
+  group.add(ringB);
+
+  scene.add(group);
+  shiftOrbs.push({
+    group,
+    x,
+    z,
+    baseY: group.position.y,
+    phase: random() * Math.PI * 2,
+    collected: false,
+  });
+}
+
 function createHazard(x, z) {
   const width = 1.12;
   const depth = 0.76;
@@ -756,6 +1004,218 @@ function createHazard(x, z) {
 
   scene.add(group);
   hazards.push({ group, x, z, width, depth });
+}
+
+function enterShiftMode(origin) {
+  if (state.dimension !== "3d") {
+    return;
+  }
+
+  state.dimension = "shift2d";
+  state.shiftCoins = 0;
+  state.shiftEntryZ = ballBody.position.z;
+  state.shiftPlaneZ = ballBody.position.z;
+  state.shiftResumeZ = ballBody.position.z - 32;
+  state.shiftEndsAt = state.elapsed + SHIFT_DURATION;
+  state.shiftFinishX = 35.5;
+
+  clearShiftStage();
+  createShiftStage();
+  setTrackVisible(false);
+  shiftRoot.visible = true;
+
+  ballBody.position.set(-6.8, 2.65, state.shiftPlaneZ);
+  ballBody.velocity.set(4.65, 5.7, 0);
+  ballBody.angularVelocity.set(0, 0, 0);
+  state.lastBounceAt = state.elapsed - 0.2;
+  state.lastGroundedAt = state.elapsed - 1;
+  ballVisual.squash = 0.9;
+  createBurst(origin, 0x9b8cff);
+}
+
+function exitShiftMode(reason) {
+  if (state.dimension !== "shift2d") {
+    return;
+  }
+
+  const success = reason === "complete" || (reason === "timeout" && state.shiftCoins >= 5);
+  const advance = success ? 42 : 24;
+  const bonus = success ? 360 + state.shiftCoins * 95 : state.shiftCoins * 60;
+  state.shiftBonus += bonus;
+  state.multiplier = success ? 2 : 1;
+  state.multiplierEndsAt = success ? state.elapsed + 11 : 0;
+  state.dimension = "3d";
+  state.shiftResumeZ = state.shiftEntryZ - advance;
+  state.shiftCooldownUntil = state.elapsed + 4.5;
+  state.currentLane = 0;
+
+  setTrackVisible(true);
+  shiftRoot.visible = false;
+  clearShiftStage();
+  createReentryRunway(state.shiftResumeZ);
+
+  const reentry = findReentryPlatform(state.shiftResumeZ);
+  const reentryX = reentry ? reentry.x : 0;
+  const reentryZ = reentry ? reentry.z + Math.min(1, reentry.depth * 0.22) : state.shiftResumeZ;
+  const reentryTop = reentry ? reentry.height / 2 : 0.17;
+  state.currentLane = reentry ? Math.round(reentry.x / LANE_WIDTH) : 0;
+  ballBody.position.set(reentryX, reentryTop + BALL_RADIUS + 0.12, reentryZ);
+  ballBody.velocity.set(0, success ? 8.4 : 6.5, -Math.max(BASE_SPEED, Math.abs(state.speed)));
+  ballBody.angularVelocity.set(0, 0, 0);
+  state.lastBounceAt = state.elapsed - 0.2;
+  state.lastGroundedAt = state.elapsed - 1;
+  ballVisual.squash = success ? 0.85 : 0.35;
+  createBurst(ballBody.position, success ? 0x47e6cf : 0xff6b6b);
+  updateTrack();
+}
+
+function findReentryPlatform(targetZ) {
+  let best = null;
+  let bestDistance = Infinity;
+  for (const platform of platforms) {
+    const distance = Math.abs(platform.z - targetZ);
+    if (distance < bestDistance) {
+      best = platform;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+function createReentryRunway(centerZ) {
+  for (let i = 0; i < 6; i += 1) {
+    const z = centerZ - i * SEGMENT_GAP;
+    const kind = i === 1 ? "boost" : "normal";
+    createPlatform(0, z, 4.35, kind === "boost" ? 5.35 : 5.05, kind, 9000 + i);
+  }
+}
+
+function createShiftStage() {
+  const z = state.shiftPlaneZ;
+  const layout = [
+    { x: -7.2, y: 0, width: 6.2, kind: "normal" },
+    { x: -2.4, y: 0.92, width: 3.9, kind: "normal" },
+    { x: 1.9, y: 1.78, width: 3.35, kind: "boost" },
+    { x: 6.2, y: 1.05, width: 3.9, kind: "normal" },
+    { x: 10.8, y: 2.08, width: 3.6, kind: "normal" },
+    { x: 15.1, y: 0.95, width: 4.15, kind: "boost" },
+    { x: 19.7, y: 1.72, width: 3.25, kind: "normal" },
+    { x: 24.2, y: 2.55, width: 3.35, kind: "normal" },
+    { x: 29.5, y: 1.35, width: 4.8, kind: "boost" },
+  ];
+
+  for (const item of layout) {
+    createShiftPlatform(item.x, item.y, z, item.width, item.kind);
+    createShiftCoin(item.x, item.y + 1.15, z);
+  }
+
+  createShiftCoin(5.2, 4.05, z);
+  createShiftCoin(14.8, 4.25, z);
+  createShiftCoin(24.2, 4.85, z);
+  createShiftHazard(8.7, 0.74, z);
+  createShiftHazard(22.2, 3.35, z);
+  createShiftGate(state.shiftFinishX, 2.45, z);
+}
+
+function createShiftPlatform(x, y, z, width, kind) {
+  const height = 0.32;
+  const geometry = new THREE.BoxGeometry(width, height, SHIFT_PLANE_DEPTH);
+  const mesh = new THREE.Mesh(geometry, kind === "boost" ? materials.boost : materials.shiftPlatform);
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  mesh.castShadow = true;
+  shiftRoot.add(mesh);
+
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), materials.edge);
+  edge.position.copy(mesh.position);
+  shiftRoot.add(edge);
+
+  if (kind === "boost") {
+    const pad = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.64, SHIFT_PLANE_DEPTH * 0.72), materials.pad);
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.set(x, y + height / 2 + 0.012, z);
+    shiftRoot.add(pad);
+  }
+
+  shiftPlatforms.push({ mesh, edge, x, y, z, width, height, kind });
+}
+
+function createShiftCoin(x, y, z) {
+  const mesh = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.052, 12, 32), materials.shiftCoin);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  shiftRoot.add(mesh);
+  shiftCoins.push({
+    mesh,
+    x,
+    y,
+    z,
+    baseY: y,
+    phase: random() * Math.PI * 2,
+    collected: false,
+  });
+}
+
+function createShiftHazard(x, y, z) {
+  const width = 0.72;
+  const height = 0.72;
+  const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.44, 0), materials.hazard);
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  shiftRoot.add(mesh);
+  shiftHazards.push({ mesh, x, y, z, width, height });
+}
+
+function createShiftGate(x, y, z) {
+  const gate = new THREE.Group();
+  gate.position.set(x, y, z);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.065, 16, 48), materials.shiftOrb);
+  gate.add(ring);
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.24, 1), materials.shiftCoin);
+  gate.add(core);
+  shiftRoot.add(gate);
+}
+
+function clearShiftStage() {
+  for (const platform of shiftPlatforms) {
+    shiftRoot.remove(platform.mesh);
+    shiftRoot.remove(platform.edge);
+    platform.mesh.geometry.dispose();
+    platform.edge.geometry.dispose();
+  }
+  shiftPlatforms.length = 0;
+
+  for (const coin of shiftCoins) {
+    shiftRoot.remove(coin.mesh);
+    coin.mesh.geometry.dispose();
+  }
+  shiftCoins.length = 0;
+
+  for (const hazard of shiftHazards) {
+    shiftRoot.remove(hazard.mesh);
+    hazard.mesh.geometry.dispose();
+  }
+  shiftHazards.length = 0;
+
+  for (const child of [...shiftRoot.children]) {
+    shiftRoot.remove(child);
+    disposeObject(child);
+  }
+}
+
+function setTrackVisible(visible) {
+  for (const platform of platforms) {
+    platform.group.visible = visible;
+  }
+  for (const pickup of pickups) {
+    pickup.mesh.visible = visible && !pickup.collected;
+  }
+  for (const orb of shiftOrbs) {
+    orb.group.visible = visible && !orb.collected;
+  }
+  for (const hazard of hazards) {
+    hazard.group.visible = visible;
+  }
 }
 
 function createBurst(origin, color) {
@@ -806,6 +1266,17 @@ function resetGame() {
   state.lastGroundedAt = -10;
   state.boostQueuedAt = -10;
   state.lastImpact = 0;
+  state.dimension = "3d";
+  state.shiftCoins = 0;
+  state.shiftBonus = 0;
+  state.multiplier = 1;
+  state.multiplierEndsAt = 0;
+  state.shiftEndsAt = 0;
+  state.shiftEntryZ = 0;
+  state.shiftPlaneZ = 0;
+  state.shiftResumeZ = 0;
+  state.shiftFinishX = 0;
+  state.shiftCooldownUntil = 0;
   state.rings = 0;
   state.score = 0;
   state.distance = 0;
@@ -845,6 +1316,12 @@ function clearGeneratedObjects() {
   }
   pickups.length = 0;
 
+  for (const orb of shiftOrbs) {
+    scene.remove(orb.group);
+    disposeObject(orb.group);
+  }
+  shiftOrbs.length = 0;
+
   for (const hazard of hazards) {
     scene.remove(hazard.group);
     disposeObject(hazard.group);
@@ -857,6 +1334,8 @@ function clearGeneratedObjects() {
     burst.points.material.dispose();
   }
   bursts.length = 0;
+  clearShiftStage();
+  shiftRoot.visible = false;
 }
 
 function removeBehind(list, cutoff, remove) {
@@ -929,12 +1408,22 @@ function endGame(reason) {
 }
 
 function updateHud() {
-  state.score = Math.floor(state.distance * 12 + state.rings * 125);
+  state.score = Math.floor(state.distance * 12 + state.rings * 125 + state.shiftBonus);
   const displaySpeed = Math.abs(state.speed) < 0.5 ? 0 : Math.round(state.speed);
+  const remainingShift = Math.max(0, Math.ceil(state.shiftEndsAt - state.elapsed));
   ui.score.textContent = formatScore(state.score);
   ui.best.textContent = formatScore(Math.max(state.best, state.score));
-  ui.rings.textContent = String(state.rings);
-  ui.speed.textContent = `${displaySpeed}`;
+  ui.rings.textContent = state.dimension === "shift2d" ? String(state.shiftCoins) : String(state.rings);
+  ui.speed.textContent = state.dimension === "shift2d" ? `${remainingShift}s` : `${displaySpeed}`;
+
+  ui.dimensionBanner.classList.toggle("is-shift", state.dimension === "shift2d");
+  if (state.dimension === "shift2d") {
+    ui.dimensionBanner.textContent = `2D SHIFT · ${state.shiftCoins}`;
+  } else if (state.multiplier > 1) {
+    ui.dimensionBanner.textContent = `3D RUN · x${state.multiplier}`;
+  } else {
+    ui.dimensionBanner.textContent = "3D RUN";
+  }
 }
 
 function queueBoost() {
