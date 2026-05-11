@@ -1174,13 +1174,13 @@ function exitShiftMode(reason) {
 }
 
 function createReentryRunway(centerZ) {
-  const count = 9;
+  const count = 3;
   clearReentryCorridor(centerZ, count);
 
   const depth = count * SEGMENT_GAP + 1.6;
   const z = centerZ - ((count - 1) * SEGMENT_GAP) / 2;
   const platform = createPlatform(0, z, 4.5, depth, "normal", 9000);
-  platform.spawnZ = centerZ + 1.35;
+  platform.spawnZ = centerZ + 0.95;
   platform.frontZ = z + depth / 2;
   platform.tailZ = z - depth / 2;
   state.nextSegmentZ = Math.min(state.nextSegmentZ, platform.tailZ - SEGMENT_GAP * 0.72);
@@ -1216,32 +1216,87 @@ function clearReentryCorridor(centerZ, count) {
 
 function createShiftStage() {
   const z = state.shiftPlaneZ;
-  const layout = [
-    { x: -8.1, y: 0, width: 5.9, kind: "normal" },
-    { x: -2.7, y: 0.88, width: 3.4, kind: "normal" },
-    { x: 1.85, y: 1.92, width: 2.85, kind: "jump" },
-    { x: 6.2, y: 1.18, width: 3.05, kind: "moving", moveAmplitude: 1.35, moveLift: 0.18, moveSpeed: 1.1 },
-    { x: 10.9, y: 2.5, width: 2.75, kind: "vanish", vanishInterval: 3.2, vanishOffset: 0.4 },
-    { x: 15.2, y: 1.16, width: 3.35, kind: "normal" },
-    { x: 19.25, y: 2.58, width: 2.8, kind: "jump" },
-    { x: 23.85, y: 1.7, width: 3.25, kind: "moving", moveAmplitude: 1.15, moveLift: 0.32, moveSpeed: 1.35, movePhase: Math.PI * 0.45 },
-    { x: 28.4, y: 2.82, width: 2.6, kind: "vanish", vanishInterval: 2.8, vanishOffset: 1.2 },
-    { x: 33.15, y: 1.25, width: 4.6, kind: "normal" },
-  ];
+  const profile = Math.floor(random() * 3);
+  const layouts = [
+    [
+      { x: -8.1, y: 0, width: 5.9, kind: "normal" },
+      { x: -2.7, y: 0.88, width: 3.4, kind: "normal" },
+      { x: 1.85, y: 1.92, width: 2.85, kind: "jump" },
+      { x: 6.2, y: 1.18, width: 3.05, kind: "moving", moveAmplitude: 1.35, moveLift: 0.18, moveSpeed: 1.1 },
+      { x: 10.9, y: 2.5, width: 2.75, kind: "vanish", vanishInterval: 3.2 },
+      { x: 15.2, y: 1.16, width: 3.35, kind: "normal" },
+      { x: 19.25, y: 2.58, width: 2.8, kind: "jump" },
+      { x: 23.85, y: 1.7, width: 3.25, kind: "moving", moveAmplitude: 1.15, moveLift: 0.32, moveSpeed: 1.35 },
+      { x: 28.4, y: 2.82, width: 2.6, kind: "vanish", vanishInterval: 2.8 },
+      { x: 33.15, y: 1.25, width: 4.6, kind: "normal" },
+    ],
+    [
+      { x: -8.1, y: 0, width: 5.9, kind: "normal" },
+      { x: -3.1, y: 1.24, width: 3.0, kind: "jump" },
+      { x: 1.3, y: 0.54, width: 3.45, kind: "moving", moveAmplitude: 1.2, moveLift: 0.2, moveSpeed: 1.2 },
+      { x: 5.6, y: 1.75, width: 2.85, kind: "normal" },
+      { x: 9.8, y: 2.85, width: 2.65, kind: "vanish", vanishInterval: 3.0 },
+      { x: 14.35, y: 1.58, width: 3.1, kind: "moving", moveAmplitude: 1.35, moveLift: 0.24, moveSpeed: 1.4 },
+      { x: 18.6, y: 2.7, width: 2.65, kind: "jump" },
+      { x: 23.1, y: 1.42, width: 3.0, kind: "vanish", vanishInterval: 2.9 },
+      { x: 27.6, y: 2.5, width: 2.9, kind: "moving", moveAmplitude: 1.05, moveLift: 0.28, moveSpeed: 1.1 },
+      { x: 32.55, y: 1.15, width: 4.4, kind: "normal" },
+    ],
+    [
+      { x: -8.1, y: 0, width: 5.9, kind: "normal" },
+      { x: -2.35, y: 0.55, width: 2.95, kind: "moving", moveAmplitude: 1.15, moveLift: 0.18, moveSpeed: 1.3 },
+      { x: 2.15, y: 1.74, width: 2.7, kind: "vanish", vanishInterval: 3.25 },
+      { x: 6.5, y: 0.85, width: 3.1, kind: "jump" },
+      { x: 10.8, y: 2.05, width: 2.85, kind: "moving", moveAmplitude: 1.25, moveLift: 0.34, moveSpeed: 1.25 },
+      { x: 15.4, y: 2.94, width: 2.55, kind: "normal" },
+      { x: 19.7, y: 1.7, width: 2.9, kind: "vanish", vanishInterval: 2.85 },
+      { x: 24.35, y: 2.75, width: 2.7, kind: "jump" },
+      { x: 28.8, y: 1.55, width: 3.15, kind: "moving", moveAmplitude: 1.2, moveLift: 0.22, moveSpeed: 1.45 },
+      { x: 33.35, y: 2.35, width: 4.25, kind: "normal" },
+    ],
+  ][profile];
+
+  const layout = layouts.map((item, index) => ({
+    ...item,
+    x: index === 0 ? item.x : item.x + (random() - 0.5) * 0.58,
+    y: index === 0 ? item.y : THREE.MathUtils.clamp(item.y + (random() - 0.5) * 0.42, 0.45, 3.05),
+    width: THREE.MathUtils.clamp(item.width + (random() - 0.5) * 0.34, 2.45, 6.05),
+    moveAmplitude: item.moveAmplitude ? item.moveAmplitude + (random() - 0.5) * 0.36 : 0,
+    moveLift: item.moveLift ? item.moveLift + (random() - 0.5) * 0.1 : 0,
+    moveSpeed: item.moveSpeed ? item.moveSpeed + (random() - 0.5) * 0.28 : 1,
+    movePhase: random() * Math.PI * 2,
+    vanishInterval: item.vanishInterval ? item.vanishInterval + (random() - 0.5) * 0.42 : 0,
+    vanishOffset: random() * 2.1,
+  }));
 
   for (const item of layout) {
     createShiftPlatform(item.x, item.y, z, item.width, item.kind, item);
-    createShiftCoin(item.x, item.y + 1.15, z);
+    if (random() < 0.86 || item.kind === "jump") {
+      createShiftCoin(item.x + (random() - 0.5) * Math.max(0.3, item.width * 0.35), item.y + 1.05 + random() * 0.42, z);
+    }
   }
 
-  createShiftCoin(4.2, 3.85, z);
-  createShiftCoin(12.8, 4.15, z);
-  createShiftCoin(22.2, 4.55, z);
-  createShiftCoin(30.8, 4.15, z);
-  createShiftHazard(8.4, 0.68, z);
-  createShiftHazard(17.2, 1.54, z);
-  createShiftHazard(26.8, 1.92, z);
-  createShiftGate(state.shiftFinishX, 2.28, z);
+  const bonusCoinCount = 3 + Math.floor(random() * 3);
+  for (let i = 0; i < bonusCoinCount; i += 1) {
+    const anchor = layout[2 + Math.floor(random() * (layout.length - 4))];
+    createShiftCoin(anchor.x + (random() - 0.5) * 1.4, anchor.y + 1.72 + random() * 0.9, z);
+  }
+
+  const hazardSlots = [
+    { x: layout[3].x + 1.8, y: layout[3].y - 0.52 },
+    { x: layout[5].x + 1.65, y: layout[5].y - 0.38 },
+    { x: layout[7].x + 1.7, y: layout[7].y - 0.36 },
+    { x: layout[8].x + 1.95, y: layout[8].y - 0.48 },
+  ].sort(() => random() - 0.5);
+  const hazardCount = 2 + Math.floor(random() * 2);
+  for (let i = 0; i < hazardCount; i += 1) {
+    const hazard = hazardSlots[i];
+    createShiftHazard(hazard.x + (random() - 0.5) * 0.42, THREE.MathUtils.clamp(hazard.y, 0.24, 2.25), z);
+  }
+
+  const lastPlatform = layout[layout.length - 1];
+  state.shiftFinishX = lastPlatform.x + lastPlatform.width / 2 + 2.0 + random() * 1.2;
+  createShiftGate(state.shiftFinishX, lastPlatform.y + 1.12, z);
 }
 
 function createShiftPlatform(x, y, z, width, kind, options = {}) {
