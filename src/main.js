@@ -8,12 +8,15 @@ const ui = {
   rings: document.querySelector("#rings"),
   speed: document.querySelector("#speed"),
   dimensionBanner: document.querySelector("#dimensionBanner"),
+  countdown: document.querySelector("#countdown"),
+  countdownNumber: document.querySelector("#countdownNumber"),
   overlay: document.querySelector("#overlay"),
   overlayEyebrow: document.querySelector("#overlayEyebrow"),
   overlayTitle: document.querySelector("#overlayTitle"),
   overlayText: document.querySelector("#overlayText"),
   startButton: document.querySelector("#startButton"),
   pauseButton: document.querySelector("#pauseButton"),
+  endButton: document.querySelector("#endButton"),
   forwardControl: document.querySelector("#forwardControl"),
   backControl: document.querySelector("#backControl"),
   leftControl: document.querySelector("#leftControl"),
@@ -70,6 +73,7 @@ world.addContactMaterial(
 
 const state = {
   mode: "ready",
+  countdownToken: 0,
   elapsed: 0,
   score: 0,
   best: readBestScore(),
@@ -374,6 +378,7 @@ function setupInput() {
 
   ui.startButton.addEventListener("click", startGame);
   ui.pauseButton.addEventListener("click", togglePause);
+  ui.endButton.addEventListener("click", endCurrentGame);
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && state.mode === "playing") {
@@ -1369,12 +1374,27 @@ function removeInZRange(list, minZ, maxZ, remove) {
   }
 }
 
-function startGame() {
+async function startGame() {
   if (state.mode === "paused") {
     setMode("playing");
     return;
   }
+
+  if (state.mode === "playing" || state.mode === "countdown") {
+    return;
+  }
+
+  const token = state.countdownToken + 1;
+  state.countdownToken = token;
   resetGame();
+
+  setMode("countdown");
+  await runStartCountdown(token);
+
+  if (state.countdownToken !== token || state.mode !== "countdown") {
+    return;
+  }
+
   setMode("playing");
 }
 
@@ -1386,14 +1406,28 @@ function togglePause() {
   }
 }
 
+function endCurrentGame() {
+  if (!["playing", "paused", "countdown"].includes(state.mode)) {
+    return;
+  }
+
+  state.countdownToken += 1;
+  endGame("quit", true);
+}
+
 function setMode(mode) {
   state.mode = mode;
-  ui.pauseButton.disabled = mode === "ready" || mode === "gameover";
+  ui.pauseButton.disabled = mode === "ready" || mode === "gameover" || mode === "countdown";
+  ui.endButton.disabled = mode === "ready" || mode === "gameover";
   ui.pauseButton.innerHTML = mode === "paused" ? '<span aria-hidden="true">&gt;</span>' : '<span aria-hidden="true">||</span>';
   ui.pauseButton.setAttribute("aria-label", mode === "paused" ? "resume" : "pause");
   ui.pauseButton.title = mode === "paused" ? "resume" : "pause";
 
-  if (mode === "playing") {
+  if (mode !== "countdown") {
+    hideCountdown();
+  }
+
+  if (mode === "playing" || mode === "countdown") {
     ui.overlay.classList.remove("open");
     return;
   }
@@ -1402,19 +1436,46 @@ function setMode(mode) {
   if (mode === "ready") {
     ui.overlayEyebrow.textContent = "3D ARCADE";
     ui.overlayTitle.textContent = "Sky Bounce";
-    ui.overlayText.textContent = "앞뒤 속도를 조절하며 링을 노리세요.";
-    ui.startButton.textContent = "플레이";
+    ui.overlayText.textContent = "\uc55e\ub4a4 \uc18d\ub3c4\ub97c \uc870\uc808\ud558\uba70 \ub9c1\uc744 \ub178\ub9ac\uc138\uc694.";
+    ui.startButton.textContent = "\ud50c\ub808\uc774";
   }
   if (mode === "paused") {
     ui.overlayEyebrow.textContent = "PAUSED";
-    ui.overlayTitle.textContent = "일시 정지";
-    ui.overlayText.textContent = `점수 ${formatScore(state.score)} · 링 ${state.rings}`;
-    ui.startButton.textContent = "계속";
+    ui.overlayTitle.textContent = "\uc77c\uc2dc \uc815\uc9c0";
+    ui.overlayText.textContent = `\uc810\uc218 ${formatScore(state.score)} \u00b7 \ub9c1 ${state.rings}`;
+    ui.startButton.textContent = "\uacc4\uc18d";
   }
 }
 
-function endGame(reason) {
-  if (state.mode !== "playing") {
+async function runStartCountdown(token) {
+  ui.countdown.classList.add("open");
+
+  for (const label of ["3", "2", "1"]) {
+    if (state.countdownToken !== token || state.mode !== "countdown") {
+      return;
+    }
+
+    ui.countdownNumber.textContent = label;
+    ui.countdownNumber.classList.remove("tick");
+    void ui.countdownNumber.offsetWidth;
+    ui.countdownNumber.classList.add("tick");
+    await wait(720);
+  }
+}
+
+function hideCountdown() {
+  ui.countdown.classList.remove("open");
+  ui.countdownNumber.classList.remove("tick");
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
+
+function endGame(reason, force = false) {
+  if (!force && state.mode !== "playing") {
     return;
   }
 
@@ -1423,10 +1484,10 @@ function endGame(reason) {
   updateHud();
 
   setMode("gameover");
-  ui.overlayEyebrow.textContent = reason === "hit" ? "CRASH" : "FALL";
-  ui.overlayTitle.textContent = reason === "hit" ? "충돌" : "낙하";
-  ui.overlayText.textContent = `점수 ${formatScore(state.score)} · 링 ${state.rings}`;
-  ui.startButton.textContent = "다시";
+  ui.overlayEyebrow.textContent = reason === "hit" ? "CRASH" : reason === "quit" ? "END" : "FALL";
+  ui.overlayTitle.textContent = reason === "hit" ? "\ucda9\ub3cc" : reason === "quit" ? "\uc885\ub8cc" : "\ub099\ud558";
+  ui.overlayText.textContent = `\uc810\uc218 ${formatScore(state.score)} \u00b7 \ub9c1 ${state.rings}`;
+  ui.startButton.textContent = "\ub2e4\uc2dc";
 }
 
 function updateHud() {
@@ -1440,9 +1501,9 @@ function updateHud() {
 
   ui.dimensionBanner.classList.toggle("is-shift", state.dimension === "shift2d");
   if (state.dimension === "shift2d") {
-    ui.dimensionBanner.textContent = `2D SHIFT · ${state.shiftCoins}`;
+    ui.dimensionBanner.textContent = `2D SHIFT \u00b7 ${state.shiftCoins}`;
   } else if (state.multiplier > 1) {
-    ui.dimensionBanner.textContent = `3D RUN · x${state.multiplier}`;
+    ui.dimensionBanner.textContent = `3D RUN \u00b7 x${state.multiplier}`;
   } else {
     ui.dimensionBanner.textContent = "3D RUN";
   }
