@@ -56,6 +56,33 @@ button {
   display: block;
 }
 
+.dimension-banner {
+  position: absolute;
+  top: max(76px, calc(env(safe-area-inset-top) + 76px));
+  left: 50%;
+  z-index: 5;
+  min-width: 136px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  padding: 8px 14px;
+  transform: translateX(-50%);
+  background: rgba(10, 13, 20, 0.58);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-align: center;
+  backdrop-filter: blur(14px);
+  pointer-events: none;
+}
+
+.dimension-banner.is-shift {
+  color: #111520;
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
 .hud {
   position: absolute;
   top: max(16px, env(safe-area-inset-top));
