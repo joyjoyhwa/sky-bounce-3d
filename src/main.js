@@ -28,6 +28,7 @@ const BASE_SPEED = 5.8;
 const MAX_SPEED = 14.2;
 const REVERSE_SPEED = 5.4;
 const STEER_SPEED = 7.65;
+const LANDING_EDGE_MARGIN = BALL_RADIUS * 0.18;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -74,6 +75,7 @@ const state = {
   currentLane: 0,
   segmentIndex: 0,
   farthestZ: START_Z,
+  previousBallY: 0,
   lastBounceAt: -10,
   lastGroundedAt: -10,
   boostQueuedAt: -10,
@@ -152,6 +154,12 @@ const materials = {
     roughness: 0.28,
     metalness: 0.18,
   }),
+  dangerZone: new THREE.MeshBasicMaterial({
+    color: 0xff4668,
+    transparent: true,
+    opacity: 0.24,
+    depthWrite: false,
+  }),
   pad: new THREE.MeshStandardMaterial({
     color: 0x47e6cf,
     emissive: 0x47e6cf,
@@ -187,25 +195,6 @@ const ballBody = new CANNON.Body({
   angularDamping: 0.14,
 });
 world.addBody(ballBody);
-
-ballBody.addEventListener("collide", (event) => {
-  const platform = event.body.userData;
-  if (!platform || platform.type !== "platform" || state.mode !== "playing") {
-    return;
-  }
-
-  const top = event.body.position.y + platform.height / 2;
-  const landedFromAbove = ballBody.position.y > top + BALL_RADIUS * 0.48;
-  const canBounce = state.elapsed - state.lastBounceAt > 0.14;
-
-  if (landedFromAbove && canBounce && ballBody.velocity.y <= 1.8) {
-    const lift = platform.kind === "boost" ? 12.6 : 8.55;
-    ballBody.velocity.y = Math.max(ballBody.velocity.y, lift);
-    state.lastBounceAt = state.elapsed;
-    state.lastGroundedAt = state.elapsed;
-    createBurst(ballBody.position, platform.kind === "boost" ? 0x47e6cf : 0xffd166);
-  }
-});
 
 setupEnvironment();
 setupTrail();
@@ -375,8 +364,10 @@ function tick(time) {
 }
 
 function updateGame(delta) {
+  state.previousBallY = ballBody.position.y;
   handleControls(delta);
   world.step(1 / 60, delta, 3);
+  resolveVisibleLanding();
   syncBall();
   updateTrack();
   updatePickups(delta);
@@ -420,6 +411,51 @@ function handleControls(delta) {
     state.boostQueuedAt = -10;
     createBurst(ballBody.position, 0xff6b6b);
   }
+}
+
+function resolveVisibleLanding() {
+  const previousBottom = state.previousBallY - BALL_RADIUS;
+  const currentBottom = ballBody.position.y - BALL_RADIUS;
+  const movingDown = ballBody.velocity.y <= 1.2;
+  const canBounce = state.elapsed - state.lastBounceAt > 0.14;
+
+  if (!movingDown || !canBounce) {
+    return;
+  }
+
+  let landing = null;
+  for (const platform of platforms) {
+    const top = platform.height / 2;
+    const crossedTop = previousBottom >= top - 0.08 && currentBottom <= top + 0.14;
+    const stillCatchable = ballBody.position.y >= top - 0.08 && currentBottom <= top;
+    if (!crossedTop && !stillCatchable) {
+      continue;
+    }
+
+    const withinX =
+      Math.abs(ballBody.position.x - platform.x) <= platform.width / 2 + LANDING_EDGE_MARGIN;
+    const withinZ =
+      Math.abs(ballBody.position.z - platform.z) <= platform.depth / 2 + LANDING_EDGE_MARGIN;
+    if (!withinX || !withinZ) {
+      continue;
+    }
+
+    if (!landing || platform.z < landing.z) {
+      landing = platform;
+    }
+  }
+
+  if (!landing) {
+    return;
+  }
+
+  const top = landing.height / 2;
+  ballBody.position.y = top + BALL_RADIUS;
+  const lift = landing.kind === "boost" ? 12.6 : 8.55;
+  ballBody.velocity.y = Math.max(ballBody.velocity.y, lift);
+  state.lastBounceAt = state.elapsed;
+  state.lastGroundedAt = state.elapsed;
+  createBurst(ballBody.position, landing.kind === "boost" ? 0x47e6cf : 0xffd166);
 }
 
 function syncBall() {
@@ -476,10 +512,11 @@ function updateHazards(delta) {
   const bz = ballBody.position.z;
 
   for (const hazard of hazards) {
-    hazard.group.rotation.y += delta * 1.4;
     const dx = bx - hazard.x;
     const dz = bz - hazard.z;
-    if (dx * dx + dz * dz < 0.64 && by < 1.35 && by > -0.3) {
+    const insideDangerZone =
+      Math.abs(dx) <= hazard.width / 2 && Math.abs(dz) <= hazard.depth / 2;
+    if (insideDangerZone && by < 1.35 && by > -0.3) {
       createBurst(ballBody.position, 0xff4668);
       endGame("hit");
       return;
@@ -635,6 +672,7 @@ function createPlatform(x, z, width, depth, kind, index) {
     shape: new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, depth / 2)),
   });
   body.position.set(x, 0, z);
+  body.collisionResponse = false;
   body.userData = {
     type: "platform",
     kind,
@@ -643,7 +681,7 @@ function createPlatform(x, z, width, depth, kind, index) {
   };
   world.addBody(body);
 
-  platforms.push({ group, body, z, index });
+  platforms.push({ group, body, x, z, width, depth, height, kind, index });
 }
 
 function createPickup(x, z) {
@@ -661,8 +699,15 @@ function createPickup(x, z) {
 }
 
 function createHazard(x, z) {
+  const width = 1.12;
+  const depth = 0.76;
   const group = new THREE.Group();
   group.position.set(x, 0.18, z);
+
+  const zone = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), materials.dangerZone);
+  zone.rotation.x = -Math.PI / 2;
+  zone.position.y = 0.014;
+  group.add(zone);
 
   for (let i = 0; i < 3; i += 1) {
     const spike = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.82, 4), materials.hazard);
@@ -673,7 +718,7 @@ function createHazard(x, z) {
   }
 
   scene.add(group);
-  hazards.push({ group, x, z });
+  hazards.push({ group, x, z, width, depth });
 }
 
 function createBurst(origin, color) {
@@ -952,11 +997,6 @@ function disposeObject(root) {
   root.traverse((object) => {
     if (object.geometry) {
       object.geometry.dispose();
-    }
-    if (Array.isArray(object.material)) {
-      for (const material of object.material) {
-        material.dispose();
-      }
     }
   });
 }
