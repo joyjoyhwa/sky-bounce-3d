@@ -35,8 +35,15 @@ const STEER_SPEED = 7.65;
 const LANDING_EDGE_MARGIN = BALL_RADIUS * 0.18;
 const NORMAL_BOUNCE = 9.35;
 const BOOST_BOUNCE = 13.65;
-const SHIFT_DURATION = 11;
+const SHIFT_DURATION = 18;
 const SHIFT_PLANE_DEPTH = 0.78;
+const SHIFT_MOVE_SPEED = 5.55;
+const SHIFT_AIR_CONTROL = 0.48;
+const SHIFT_BOUNCE = 9.15;
+const SHIFT_POWER_BOUNCE = 14.45;
+const SHIFT_PAD_BOUNCE = 16.2;
+const SHIFT_REENTRY_IGNORE = 0.14;
+const SHIFT_FAILURE_BEHAVIOR = "return";
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -89,6 +96,9 @@ const state = {
   shiftResumeZ: 0,
   shiftFinishX: 0,
   shiftCooldownUntil: 0,
+  ignoreLandingUntil: 0,
+  nextSegmentZ: START_Z,
+  cameraSnapUntil: 0,
   speed: BASE_SPEED,
   distance: 0,
   seed: 1,
@@ -116,6 +126,7 @@ const hazards = [];
 const shiftPlatforms = [];
 const shiftCoins = [];
 const shiftHazards = [];
+const shiftGates = [];
 const bursts = [];
 const trail = [];
 
@@ -442,7 +453,9 @@ function updateRunMode(delta) {
   state.previousBallY = ballBody.position.y;
   handleControls(delta);
   world.step(1 / 60, delta, 3);
-  resolveVisibleLanding();
+  if (state.elapsed >= state.ignoreLandingUntil) {
+    resolveVisibleLanding();
+  }
   updateTrack();
   updatePickups(delta);
   updateShiftOrbs(delta);
@@ -488,21 +501,24 @@ function handleControls(delta) {
 
 function updateShiftMode(delta) {
   state.previousBallY = ballBody.position.y;
+  updateShiftPlatforms(delta);
   handleShiftControls(delta);
   world.step(1 / 60, delta, 3);
   ballBody.position.z = state.shiftPlaneZ;
   ballBody.velocity.z = 0;
-  resolveShiftLanding();
+  if (state.elapsed >= state.ignoreLandingUntil) {
+    resolveShiftLanding();
+  }
   updateShiftCoins(delta);
   updateShiftHazards(delta);
+  updateShiftGates(delta);
 
-  if (ballBody.position.y < -5.8) {
-    exitShiftMode("fall");
+  if (state.dimension !== "shift2d") {
     return;
   }
 
-  if (ballBody.position.x >= state.shiftFinishX) {
-    exitShiftMode("complete");
+  if (ballBody.position.y < -7.4) {
+    exitShiftMode("fall");
     return;
   }
 
@@ -514,20 +530,19 @@ function updateShiftMode(delta) {
 function handleShiftControls(delta) {
   const steer = Number(input.right) - Number(input.left);
   const thrust = Number(input.forward) - Number(input.back);
-  const targetX = THREE.MathUtils.clamp(4.65 + steer * 2.15 + thrust * 1.25, 2.15, 7.15);
-  const blend = 1 - Math.pow(0.00004, delta);
+  const horizontal = THREE.MathUtils.clamp(steer + thrust * 0.72, -1, 1);
+  const groundedRecently = state.elapsed - state.lastGroundedAt < 0.18;
+  const control = groundedRecently ? 1 : SHIFT_AIR_CONTROL;
+  const targetX = horizontal * SHIFT_MOVE_SPEED;
+  const blend = 1 - Math.pow(groundedRecently ? 0.00002 : 0.015, delta * control);
   ballBody.velocity.x += (targetX - ballBody.velocity.x) * blend;
-  ballBody.velocity.z += (0 - ballBody.velocity.z) * blend;
-  state.speed = ballBody.velocity.x;
 
-  const queuedRecently = state.elapsed - state.boostQueuedAt < 0.16;
-  const groundedRecently = state.elapsed - state.lastGroundedAt < 0.24;
-  if (queuedRecently && groundedRecently) {
-    ballBody.velocity.y = Math.max(ballBody.velocity.y, 12.2);
-    ballVisual.squash = Math.max(ballVisual.squash, 0.62);
-    state.boostQueuedAt = -10;
-    createBurst(ballBody.position, 0x47e6cf);
+  if (horizontal === 0 && groundedRecently) {
+    ballBody.velocity.x *= Math.pow(0.001, delta);
   }
+
+  ballBody.velocity.z = 0;
+  state.speed = ballBody.velocity.x;
 }
 
 function resolveShiftLanding() {
@@ -542,6 +557,10 @@ function resolveShiftLanding() {
 
   let landing = null;
   for (const platform of shiftPlatforms) {
+    if (!platform.active || platform.vanished) {
+      continue;
+    }
+
     const top = platform.y + platform.height / 2;
     const crossedTop = previousBottom >= top - 0.08 && currentBottom <= top + 0.14;
     const stillCatchable = ballBody.position.y >= top - 0.08 && currentBottom <= top;
@@ -559,13 +578,16 @@ function resolveShiftLanding() {
   }
 
   const top = landing.y + landing.height / 2;
-  ballBody.position.y = top + BALL_RADIUS;
-  const lift = landing.kind === "boost" ? 13.4 : 9.05;
+  ballBody.position.y = top + BALL_RADIUS + 0.01;
+  const powerBounce = state.elapsed - state.boostQueuedAt < 0.28;
+  const lift = landing.kind === "jump" ? SHIFT_PAD_BOUNCE : powerBounce ? SHIFT_POWER_BOUNCE : SHIFT_BOUNCE;
   ballBody.velocity.y = Math.max(ballBody.velocity.y, lift);
+  ballBody.velocity.x += landing.velocityX || 0;
   state.lastBounceAt = state.elapsed;
   state.lastGroundedAt = state.elapsed;
-  ballVisual.squash = Math.max(ballVisual.squash, landing.kind === "boost" ? 0.95 : 0.62);
-  createBurst(ballBody.position, landing.kind === "boost" ? 0x47e6cf : 0x9b8cff);
+  state.boostQueuedAt = -10;
+  ballVisual.squash = Math.max(ballVisual.squash, landing.kind === "jump" || powerBounce ? 0.95 : 0.62);
+  createBurst(ballBody.position, landing.kind === "jump" || powerBounce ? 0x47e6cf : 0x9b8cff);
 }
 
 function updateShiftCoins(delta) {
@@ -586,9 +608,39 @@ function updateShiftCoins(delta) {
   }
 }
 
+function updateShiftPlatforms(delta) {
+  for (const platform of shiftPlatforms) {
+    platform.velocityX = 0;
+    platform.velocityY = 0;
+
+    if (platform.moveAmplitude) {
+      const previousX = platform.x;
+      const previousY = platform.y;
+      const wave = Math.sin(state.elapsed * platform.moveSpeed + platform.movePhase);
+      platform.x = platform.baseX + wave * platform.moveAmplitude;
+      platform.y = platform.baseY + Math.cos(state.elapsed * platform.moveSpeed + platform.movePhase) * platform.moveLift;
+      platform.velocityX = (platform.x - previousX) / Math.max(delta, 1 / 120);
+      platform.velocityY = (platform.y - previousY) / Math.max(delta, 1 / 120);
+    }
+
+    if (platform.vanishInterval) {
+      const cycle = (state.elapsed + platform.vanishOffset) % platform.vanishInterval;
+      platform.vanished = cycle > platform.vanishInterval * 0.64;
+    }
+
+    platform.active = !platform.vanished;
+    platform.group.visible = platform.active;
+    platform.group.position.set(platform.x, platform.y, platform.z);
+    if (platform.body) {
+      platform.body.position.set(platform.x, platform.y, platform.z);
+      setBodyCollisionEnabled(platform.body, platform.active);
+    }
+  }
+}
+
 function updateShiftHazards(delta) {
   for (const hazard of shiftHazards) {
-    hazard.mesh.rotation.z += delta * 1.5;
+    hazard.group.rotation.z += delta * 1.5;
     const hit =
       Math.abs(ballBody.position.x - hazard.x) <= hazard.width / 2 &&
       Math.abs(ballBody.position.y - hazard.y) <= hazard.height / 2;
@@ -596,6 +648,20 @@ function updateShiftHazards(delta) {
       createBurst(ballBody.position, 0xff4668);
       exitShiftMode("hit");
       break;
+    }
+  }
+}
+
+function updateShiftGates(delta) {
+  const ball = reusable.ballPosition.set(ballBody.position.x, ballBody.position.y, state.shiftPlaneZ);
+  for (const gate of shiftGates) {
+    gate.group.rotation.z += delta * 1.3;
+    const inside =
+      Math.abs(ball.x - gate.x) <= gate.width / 2 &&
+      Math.abs(ball.y - gate.y) <= gate.height / 2;
+    if (inside) {
+      exitShiftMode("complete");
+      return;
     }
   }
 }
@@ -612,6 +678,10 @@ function resolveVisibleLanding() {
 
   let landing = null;
   for (const platform of platforms) {
+    if (!platform.group.visible) {
+      continue;
+    }
+
     const top = platform.height / 2;
     const crossedTop = previousBottom >= top - 0.08 && currentBottom <= top + 0.14;
     const stillCatchable = ballBody.position.y >= top - 0.08 && currentBottom <= top;
@@ -687,7 +757,7 @@ function updateTrack() {
   const cutoff = ballBody.position.z + 34;
   removeBehind(platforms, cutoff, (item) => {
     scene.remove(item.group);
-    world.removeBody(item.body);
+    removeBodyIfPresent(item.body);
     disposeObject(item.group);
   });
   removeBehind(pickups, cutoff, (item) => {
@@ -817,7 +887,7 @@ function idleMotion(seconds) {
 }
 
 function updateCamera(delta) {
-  const smooth = 1 - Math.pow(0.000001, delta);
+  const smooth = state.elapsed < state.cameraSnapUntil ? 1 : 1 - Math.pow(0.000001, delta);
   if (state.dimension === "shift2d") {
     reusable.cameraTarget.set(
       ballMesh.position.x + 3.1,
@@ -863,7 +933,7 @@ function createNextSegment() {
   }
 
   state.currentLane = lane;
-  const z = START_Z - index * SEGMENT_GAP;
+  const z = state.nextSegmentZ;
   const x = lane * LANE_WIDTH;
   const kind = choosePlatformKind(index);
   const width = kind === "glass" ? 2.82 : 3.78;
@@ -884,6 +954,7 @@ function createNextSegment() {
   }
 
   state.segmentIndex += 1;
+  state.nextSegmentZ = z - SEGMENT_GAP;
   state.farthestZ = Math.min(state.farthestZ, z);
 }
 
@@ -1018,24 +1089,28 @@ function enterShiftMode(origin) {
     return;
   }
 
-  state.dimension = "shift2d";
   state.shiftCoins = 0;
   state.shiftEntryZ = ballBody.position.z;
   state.shiftPlaneZ = ballBody.position.z;
-  state.shiftResumeZ = ballBody.position.z - 32;
   state.shiftEndsAt = state.elapsed + SHIFT_DURATION;
-  state.shiftFinishX = 35.5;
+  state.shiftFinishX = 36.4;
+  state.ignoreLandingUntil = state.elapsed + 0.12;
 
+  setTrackVisible(false);
   clearShiftStage();
   createShiftStage();
-  setTrackVisible(false);
   shiftRoot.visible = true;
+  state.dimension = "shift2d";
 
-  ballBody.position.set(-6.8, 2.65, state.shiftPlaneZ);
-  ballBody.velocity.set(4.65, 5.7, 0);
+  ballBody.position.set(-7.8, 2.7, state.shiftPlaneZ);
+  ballBody.previousPosition.copy(ballBody.position);
+  ballBody.interpolatedPosition.copy(ballBody.position);
+  ballBody.velocity.set(0, 5.8, 0);
   ballBody.angularVelocity.set(0, 0, 0);
-  state.lastBounceAt = state.elapsed - 0.2;
+  state.previousBallY = ballBody.position.y;
+  state.lastBounceAt = state.elapsed;
   state.lastGroundedAt = state.elapsed - 1;
+  state.boostQueuedAt = -10;
   ballVisual.squash = 0.9;
   createBurst(origin, 0x9b8cff);
 }
@@ -1045,53 +1120,84 @@ function exitShiftMode(reason) {
     return;
   }
 
-  const success = reason === "complete" || (reason === "timeout" && state.shiftCoins >= 5);
+  const success = reason === "complete";
+  const failed = !success;
+  if (failed && SHIFT_FAILURE_BEHAVIOR === "gameover") {
+    shiftRoot.visible = false;
+    clearShiftStage();
+    setTrackVisible(true);
+    state.dimension = "3d";
+    endGame(reason === "hit" ? "hit" : "fall");
+    return;
+  }
+
   const advance = success ? 42 : 24;
-  const bonus = success ? 360 + state.shiftCoins * 95 : state.shiftCoins * 60;
+  const bonus = success ? 420 + state.shiftCoins * 110 : 0;
   state.shiftBonus += bonus;
   state.multiplier = success ? 2 : 1;
-  state.multiplierEndsAt = success ? state.elapsed + 11 : 0;
-  state.dimension = "3d";
+  state.multiplierEndsAt = success ? state.elapsed + 9 : 0;
   state.shiftResumeZ = state.shiftEntryZ - advance;
   state.shiftCooldownUntil = state.elapsed + 4.5;
   state.currentLane = 0;
 
-  setTrackVisible(true);
   shiftRoot.visible = false;
   clearShiftStage();
   const reentry = createReentryRunway(state.shiftResumeZ);
+  setTrackVisible(true);
+  state.dimension = "3d";
+
   const reentryX = reentry ? reentry.x : 0;
   const reentryZ = reentry ? reentry.spawnZ || reentry.z : state.shiftResumeZ;
   const reentryTop = reentry ? reentry.height / 2 : 0.17;
   state.currentLane = reentry ? Math.round(reentry.x / LANE_WIDTH) : 0;
-  ballBody.position.set(reentryX, reentryTop + BALL_RADIUS + 0.12, reentryZ);
-  ballBody.velocity.set(0, success ? 8.4 : 6.5, -Math.max(BASE_SPEED, Math.abs(state.speed)));
+  const safeY = reentryTop + BALL_RADIUS + 0.08;
+
+  ballBody.position.set(reentryX, safeY, reentryZ);
+  ballBody.previousPosition.copy(ballBody.position);
+  ballBody.interpolatedPosition.copy(ballBody.position);
+  ballBody.initPosition.copy(ballBody.position);
+  ballBody.velocity.set(0, success ? 8.8 : 6.2, -Math.max(BASE_SPEED, Math.abs(state.speed), success ? 9.2 : 0));
   ballBody.angularVelocity.set(0, 0, 0);
-  state.lastBounceAt = state.elapsed - 0.2;
+  ballBody.quaternion.set(0, 0, 0, 1);
+  ballBody.wakeUp();
+  state.previousBallY = safeY;
+  state.ignoreLandingUntil = state.elapsed + SHIFT_REENTRY_IGNORE;
+  state.lastBounceAt = state.elapsed + SHIFT_REENTRY_IGNORE;
   state.lastGroundedAt = state.elapsed - 1;
+  state.boostQueuedAt = -10;
+  state.cameraSnapUntil = state.elapsed + 0.18;
   ballVisual.squash = success ? 0.85 : 0.35;
+  syncBall();
+  snapCameraToBall();
   createBurst(ballBody.position, success ? 0x47e6cf : 0xff6b6b);
   updateTrack();
 }
 
 function createReentryRunway(centerZ) {
-  const count = 8;
+  const count = 9;
   clearReentryCorridor(centerZ, count);
 
-  const depth = count * SEGMENT_GAP + 1.2;
+  const depth = count * SEGMENT_GAP + 1.6;
   const z = centerZ - ((count - 1) * SEGMENT_GAP) / 2;
   const platform = createPlatform(0, z, 4.5, depth, "normal", 9000);
-  platform.spawnZ = centerZ + 1.15;
+  platform.spawnZ = centerZ + 1.35;
+  platform.frontZ = z + depth / 2;
+  platform.tailZ = z - depth / 2;
+  state.nextSegmentZ = Math.min(state.nextSegmentZ, platform.tailZ - SEGMENT_GAP * 0.72);
+  state.farthestZ = Math.min(state.farthestZ, platform.tailZ);
   return platform;
 }
 
 function clearReentryCorridor(centerZ, count) {
-  const maxZ = centerZ + SEGMENT_GAP * 0.62;
-  const minZ = centerZ - (count - 1) * SEGMENT_GAP - SEGMENT_GAP * 0.62;
+  const maxZ = centerZ + SEGMENT_GAP * 1.1;
+  const minZ = centerZ - count * SEGMENT_GAP - SEGMENT_GAP * 0.9;
 
-  removeInZRange(platforms, minZ, maxZ, (item) => {
+  removeOverlappingZ(platforms, minZ, maxZ, (item) => ({
+    min: item.z - item.depth / 2,
+    max: item.z + item.depth / 2,
+  }), (item) => {
     scene.remove(item.group);
-    world.removeBody(item.body);
+    removeBodyIfPresent(item.body);
     disposeObject(item.group);
   });
   removeInZRange(pickups, minZ, maxZ, (item) => {
@@ -1111,51 +1217,94 @@ function clearReentryCorridor(centerZ, count) {
 function createShiftStage() {
   const z = state.shiftPlaneZ;
   const layout = [
-    { x: -7.2, y: 0, width: 6.2, kind: "normal" },
-    { x: -2.4, y: 0.92, width: 3.9, kind: "normal" },
-    { x: 1.9, y: 1.78, width: 3.35, kind: "boost" },
-    { x: 6.2, y: 1.05, width: 3.9, kind: "normal" },
-    { x: 10.8, y: 2.08, width: 3.6, kind: "normal" },
-    { x: 15.1, y: 0.95, width: 4.15, kind: "boost" },
-    { x: 19.7, y: 1.72, width: 3.25, kind: "normal" },
-    { x: 24.2, y: 2.55, width: 3.35, kind: "normal" },
-    { x: 29.5, y: 1.35, width: 4.8, kind: "boost" },
+    { x: -8.1, y: 0, width: 5.9, kind: "normal" },
+    { x: -2.7, y: 0.88, width: 3.4, kind: "normal" },
+    { x: 1.85, y: 1.92, width: 2.85, kind: "jump" },
+    { x: 6.2, y: 1.18, width: 3.05, kind: "moving", moveAmplitude: 1.35, moveLift: 0.18, moveSpeed: 1.1 },
+    { x: 10.9, y: 2.5, width: 2.75, kind: "vanish", vanishInterval: 3.2, vanishOffset: 0.4 },
+    { x: 15.2, y: 1.16, width: 3.35, kind: "normal" },
+    { x: 19.25, y: 2.58, width: 2.8, kind: "jump" },
+    { x: 23.85, y: 1.7, width: 3.25, kind: "moving", moveAmplitude: 1.15, moveLift: 0.32, moveSpeed: 1.35, movePhase: Math.PI * 0.45 },
+    { x: 28.4, y: 2.82, width: 2.6, kind: "vanish", vanishInterval: 2.8, vanishOffset: 1.2 },
+    { x: 33.15, y: 1.25, width: 4.6, kind: "normal" },
   ];
 
   for (const item of layout) {
-    createShiftPlatform(item.x, item.y, z, item.width, item.kind);
+    createShiftPlatform(item.x, item.y, z, item.width, item.kind, item);
     createShiftCoin(item.x, item.y + 1.15, z);
   }
 
-  createShiftCoin(5.2, 4.05, z);
-  createShiftCoin(14.8, 4.25, z);
-  createShiftCoin(24.2, 4.85, z);
-  createShiftHazard(8.7, 0.74, z);
-  createShiftHazard(22.2, 3.35, z);
-  createShiftGate(state.shiftFinishX, 2.45, z);
+  createShiftCoin(4.2, 3.85, z);
+  createShiftCoin(12.8, 4.15, z);
+  createShiftCoin(22.2, 4.55, z);
+  createShiftCoin(30.8, 4.15, z);
+  createShiftHazard(8.4, 0.68, z);
+  createShiftHazard(17.2, 1.54, z);
+  createShiftHazard(26.8, 1.92, z);
+  createShiftGate(state.shiftFinishX, 2.28, z);
 }
 
-function createShiftPlatform(x, y, z, width, kind) {
+function createShiftPlatform(x, y, z, width, kind, options = {}) {
   const height = 0.32;
   const geometry = new THREE.BoxGeometry(width, height, SHIFT_PLANE_DEPTH);
-  const mesh = new THREE.Mesh(geometry, kind === "boost" ? materials.boost : materials.shiftPlatform);
-  mesh.position.set(x, y, z);
+  const platformMaterial = kind === "jump" ? materials.boost : kind === "vanish" ? materials.glass : materials.shiftPlatform;
+  const mesh = new THREE.Mesh(geometry, platformMaterial);
   mesh.receiveShadow = true;
   mesh.castShadow = true;
-  shiftRoot.add(mesh);
 
   const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), materials.edge);
-  edge.position.copy(mesh.position);
-  shiftRoot.add(edge);
+  const group = new THREE.Group();
+  group.position.set(x, y, z);
+  group.add(mesh);
+  group.add(edge);
 
-  if (kind === "boost") {
+  if (kind === "jump") {
     const pad = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.64, SHIFT_PLANE_DEPTH * 0.72), materials.pad);
     pad.rotation.x = -Math.PI / 2;
-    pad.position.set(x, y + height / 2 + 0.012, z);
-    shiftRoot.add(pad);
+    pad.position.y = height / 2 + 0.012;
+    group.add(pad);
   }
 
-  shiftPlatforms.push({ mesh, edge, x, y, z, width, height, kind });
+  shiftRoot.add(group);
+
+  const body = new CANNON.Body({
+    mass: 0,
+    material: physicsMaterials.platform,
+    shape: new CANNON.Box(new CANNON.Vec3(width / 2, height / 2, SHIFT_PLANE_DEPTH / 2)),
+  });
+  body.position.set(x, y, z);
+  body.collisionResponse = false;
+  body.userData = {
+    type: "shiftPlatform",
+    kind,
+    height,
+  };
+  world.addBody(body);
+
+  shiftPlatforms.push({
+    group,
+    mesh,
+    edge,
+    body,
+    x,
+    y,
+    z,
+    baseX: x,
+    baseY: y,
+    width,
+    height,
+    kind,
+    active: true,
+    vanished: false,
+    velocityX: 0,
+    velocityY: 0,
+    moveAmplitude: options.moveAmplitude || 0,
+    moveLift: options.moveLift || 0,
+    moveSpeed: options.moveSpeed || 1,
+    movePhase: options.movePhase || random() * Math.PI * 2,
+    vanishInterval: options.vanishInterval || 0,
+    vanishOffset: options.vanishOffset || 0,
+  });
 }
 
 function createShiftCoin(x, y, z) {
@@ -1175,13 +1324,24 @@ function createShiftCoin(x, y, z) {
 }
 
 function createShiftHazard(x, y, z) {
-  const width = 0.72;
-  const height = 0.72;
-  const mesh = new THREE.Mesh(new THREE.OctahedronGeometry(0.44, 0), materials.hazard);
-  mesh.position.set(x, y, z);
-  mesh.castShadow = true;
-  shiftRoot.add(mesh);
-  shiftHazards.push({ mesh, x, y, z, width, height });
+  const width = 0.54;
+  const height = 0.58;
+  const group = new THREE.Group();
+  group.position.set(x, y, z);
+  const base = new THREE.Mesh(new THREE.PlaneGeometry(width * 1.25, 0.12), materials.dangerZone);
+  base.position.y = -height * 0.48;
+  group.add(base);
+
+  for (let i = 0; i < 3; i += 1) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.62, 4), materials.hazard);
+    spike.position.x = (i - 1) * 0.24;
+    spike.rotation.z = Math.PI;
+    spike.castShadow = true;
+    group.add(spike);
+  }
+
+  shiftRoot.add(group);
+  shiftHazards.push({ group, x, y, z, width, height });
 }
 
 function createShiftGate(x, y, z) {
@@ -1192,14 +1352,14 @@ function createShiftGate(x, y, z) {
   const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.24, 1), materials.shiftCoin);
   gate.add(core);
   shiftRoot.add(gate);
+  shiftGates.push({ group: gate, x, y, z, width: 1.65, height: 2.2 });
 }
 
 function clearShiftStage() {
   for (const platform of shiftPlatforms) {
-    shiftRoot.remove(platform.mesh);
-    shiftRoot.remove(platform.edge);
-    platform.mesh.geometry.dispose();
-    platform.edge.geometry.dispose();
+    shiftRoot.remove(platform.group);
+    removeBodyIfPresent(platform.body);
+    disposeObject(platform.group);
   }
   shiftPlatforms.length = 0;
 
@@ -1210,10 +1370,16 @@ function clearShiftStage() {
   shiftCoins.length = 0;
 
   for (const hazard of shiftHazards) {
-    shiftRoot.remove(hazard.mesh);
-    hazard.mesh.geometry.dispose();
+    shiftRoot.remove(hazard.group);
+    disposeObject(hazard.group);
   }
   shiftHazards.length = 0;
+
+  for (const gate of shiftGates) {
+    shiftRoot.remove(gate.group);
+    disposeObject(gate.group);
+  }
+  shiftGates.length = 0;
 
   for (const child of [...shiftRoot.children]) {
     shiftRoot.remove(child);
@@ -1224,6 +1390,7 @@ function clearShiftStage() {
 function setTrackVisible(visible) {
   for (const platform of platforms) {
     platform.group.visible = visible;
+    setBodyCollisionEnabled(platform.body, visible);
   }
   for (const pickup of pickups) {
     pickup.mesh.visible = visible && !pickup.collected;
@@ -1234,6 +1401,54 @@ function setTrackVisible(visible) {
   for (const hazard of hazards) {
     hazard.group.visible = visible;
   }
+}
+
+function setBodyCollisionEnabled(body, enabled) {
+  if (!body) {
+    return;
+  }
+
+  if (body.savedCollisionFilterMask === undefined) {
+    body.savedCollisionFilterMask = body.collisionFilterMask;
+    body.savedCollisionFilterGroup = body.collisionFilterGroup;
+    body.savedCollisionResponse = body.collisionResponse;
+  }
+
+  if (enabled) {
+    body.collisionFilterMask = body.savedCollisionFilterMask;
+    body.collisionFilterGroup = body.savedCollisionFilterGroup;
+    body.collisionResponse = body.savedCollisionResponse;
+    body.wakeUp();
+    return;
+  }
+
+  body.collisionFilterMask = 0;
+  body.collisionFilterGroup = 0;
+  body.collisionResponse = false;
+  body.velocity.set(0, 0, 0);
+  body.angularVelocity.set(0, 0, 0);
+  body.sleep();
+}
+
+function removeBodyIfPresent(body) {
+  if (body && world.bodies.includes(body)) {
+    world.removeBody(body);
+  }
+}
+
+function snapCameraToBall() {
+  reusable.cameraTarget.set(
+    ballMesh.position.x * 0.52,
+    Math.max(4.2, ballMesh.position.y + 5.6),
+    ballMesh.position.z + 10.7,
+  );
+  camera.position.copy(reusable.cameraTarget);
+  reusable.lookTarget.set(
+    ballMesh.position.x * 0.34,
+    Math.max(0.9, ballMesh.position.y + 0.5),
+    ballMesh.position.z - 9.8,
+  );
+  camera.lookAt(reusable.lookTarget);
 }
 
 function createBurst(origin, color) {
@@ -1295,6 +1510,9 @@ function resetGame() {
   state.shiftResumeZ = 0;
   state.shiftFinishX = 0;
   state.shiftCooldownUntil = 0;
+  state.ignoreLandingUntil = 0;
+  state.nextSegmentZ = START_Z;
+  state.cameraSnapUntil = 0;
   state.rings = 0;
   state.score = 0;
   state.distance = 0;
@@ -1303,6 +1521,9 @@ function resetGame() {
   ballVisual.squash = 0;
 
   ballBody.position.set(0, 1.62, START_Z + 0.4);
+  ballBody.previousPosition.copy(ballBody.position);
+  ballBody.interpolatedPosition.copy(ballBody.position);
+  ballBody.initPosition.copy(ballBody.position);
   ballBody.velocity.set(0, 0, 0);
   ballBody.angularVelocity.set(0, 0, 0);
   ballBody.quaternion.set(0, 0, 0, 1);
@@ -1323,7 +1544,7 @@ function resetGame() {
 function clearGeneratedObjects() {
   for (const platform of platforms) {
     scene.remove(platform.group);
-    world.removeBody(platform.body);
+    removeBodyIfPresent(platform.body);
     disposeObject(platform.group);
   }
   platforms.length = 0;
@@ -1368,6 +1589,16 @@ function removeBehind(list, cutoff, remove) {
 function removeInZRange(list, minZ, maxZ, remove) {
   for (let i = list.length - 1; i >= 0; i -= 1) {
     if (list[i].z >= minZ && list[i].z <= maxZ) {
+      remove(list[i]);
+      list.splice(i, 1);
+    }
+  }
+}
+
+function removeOverlappingZ(list, minZ, maxZ, getBounds, remove) {
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const bounds = getBounds(list[i]);
+    if (bounds.min <= maxZ && bounds.max >= minZ) {
       remove(list[i]);
       list.splice(i, 1);
     }
