@@ -939,7 +939,9 @@ function createPlatform(x, z, width, depth, kind, index) {
   };
   world.addBody(body);
 
-  platforms.push({ group, body, x, z, width, depth, height, kind, index });
+  const platform = { group, body, x, z, width, depth, height, kind, index };
+  platforms.push(platform);
+  return platform;
 }
 
 function createPickup(x, z) {
@@ -1052,11 +1054,9 @@ function exitShiftMode(reason) {
   setTrackVisible(true);
   shiftRoot.visible = false;
   clearShiftStage();
-  createReentryRunway(state.shiftResumeZ);
-
-  const reentry = findReentryPlatform(state.shiftResumeZ);
+  const reentry = createReentryRunway(state.shiftResumeZ);
   const reentryX = reentry ? reentry.x : 0;
-  const reentryZ = reentry ? reentry.z + Math.min(1, reentry.depth * 0.22) : state.shiftResumeZ;
+  const reentryZ = reentry ? reentry.spawnZ || reentry.z : state.shiftResumeZ;
   const reentryTop = reentry ? reentry.height / 2 : 0.17;
   state.currentLane = reentry ? Math.round(reentry.x / LANE_WIDTH) : 0;
   ballBody.position.set(reentryX, reentryTop + BALL_RADIUS + 0.12, reentryZ);
@@ -1069,25 +1069,38 @@ function exitShiftMode(reason) {
   updateTrack();
 }
 
-function findReentryPlatform(targetZ) {
-  let best = null;
-  let bestDistance = Infinity;
-  for (const platform of platforms) {
-    const distance = Math.abs(platform.z - targetZ);
-    if (distance < bestDistance) {
-      best = platform;
-      bestDistance = distance;
-    }
-  }
-  return best;
+function createReentryRunway(centerZ) {
+  const count = 8;
+  clearReentryCorridor(centerZ, count);
+
+  const depth = count * SEGMENT_GAP + 1.2;
+  const z = centerZ - ((count - 1) * SEGMENT_GAP) / 2;
+  const platform = createPlatform(0, z, 4.5, depth, "normal", 9000);
+  platform.spawnZ = centerZ + 1.15;
+  return platform;
 }
 
-function createReentryRunway(centerZ) {
-  for (let i = 0; i < 6; i += 1) {
-    const z = centerZ - i * SEGMENT_GAP;
-    const kind = i === 1 ? "boost" : "normal";
-    createPlatform(0, z, 4.35, kind === "boost" ? 5.35 : 5.05, kind, 9000 + i);
-  }
+function clearReentryCorridor(centerZ, count) {
+  const maxZ = centerZ + SEGMENT_GAP * 0.62;
+  const minZ = centerZ - (count - 1) * SEGMENT_GAP - SEGMENT_GAP * 0.62;
+
+  removeInZRange(platforms, minZ, maxZ, (item) => {
+    scene.remove(item.group);
+    world.removeBody(item.body);
+    disposeObject(item.group);
+  });
+  removeInZRange(pickups, minZ, maxZ, (item) => {
+    scene.remove(item.mesh);
+    disposeObject(item.mesh);
+  });
+  removeInZRange(shiftOrbs, minZ, maxZ, (item) => {
+    scene.remove(item.group);
+    disposeObject(item.group);
+  });
+  removeInZRange(hazards, minZ, maxZ, (item) => {
+    scene.remove(item.group);
+    disposeObject(item.group);
+  });
 }
 
 function createShiftStage() {
@@ -1341,6 +1354,15 @@ function clearGeneratedObjects() {
 function removeBehind(list, cutoff, remove) {
   for (let i = list.length - 1; i >= 0; i -= 1) {
     if (list[i].z > cutoff) {
+      remove(list[i]);
+      list.splice(i, 1);
+    }
+  }
+}
+
+function removeInZRange(list, minZ, maxZ, remove) {
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i].z >= minZ && list[i].z <= maxZ) {
       remove(list[i]);
       list.splice(i, 1);
     }
