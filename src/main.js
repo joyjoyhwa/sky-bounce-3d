@@ -29,6 +29,8 @@ const MAX_SPEED = 14.2;
 const REVERSE_SPEED = 5.4;
 const STEER_SPEED = 7.65;
 const LANDING_EDGE_MARGIN = BALL_RADIUS * 0.18;
+const NORMAL_BOUNCE = 9.35;
+const BOOST_BOUNCE = 13.65;
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -76,6 +78,7 @@ const state = {
   segmentIndex: 0,
   farthestZ: START_Z,
   previousBallY: 0,
+  lastImpact: 0,
   lastBounceAt: -10,
   lastGroundedAt: -10,
   boostQueuedAt: -10,
@@ -98,6 +101,13 @@ const reusable = {
   ballPosition: new THREE.Vector3(),
   cameraTarget: new THREE.Vector3(),
   lookTarget: new THREE.Vector3(),
+  rollAxis: new THREE.Vector3(),
+  rollStep: new THREE.Quaternion(),
+};
+
+const ballVisual = {
+  roll: new THREE.Quaternion(),
+  squash: 0,
 };
 
 const textures = {
@@ -368,7 +378,7 @@ function updateGame(delta) {
   handleControls(delta);
   world.step(1 / 60, delta, 3);
   resolveVisibleLanding();
-  syncBall();
+  updateBallVisual(delta);
   updateTrack();
   updatePickups(delta);
   updateHazards(delta);
@@ -407,7 +417,8 @@ function handleControls(delta) {
   const queuedRecently = state.elapsed - state.boostQueuedAt < 0.16;
   const groundedRecently = state.elapsed - state.lastGroundedAt < 0.22;
   if (queuedRecently && groundedRecently) {
-    ballBody.velocity.y = Math.max(ballBody.velocity.y, 12.25);
+    ballBody.velocity.y = Math.max(ballBody.velocity.y, 13.2);
+    ballVisual.squash = Math.max(ballVisual.squash, 0.62);
     state.boostQueuedAt = -10;
     createBurst(ballBody.position, 0xff6b6b);
   }
@@ -451,21 +462,45 @@ function resolveVisibleLanding() {
 
   const top = landing.height / 2;
   ballBody.position.y = top + BALL_RADIUS;
-  const lift = landing.kind === "boost" ? 12.6 : 8.55;
+  const impact = THREE.MathUtils.clamp(Math.abs(ballBody.velocity.y) / 13, 0.36, 1);
+  const lift = landing.kind === "boost" ? BOOST_BOUNCE : NORMAL_BOUNCE;
   ballBody.velocity.y = Math.max(ballBody.velocity.y, lift);
+  state.lastImpact = impact;
   state.lastBounceAt = state.elapsed;
   state.lastGroundedAt = state.elapsed;
+  ballVisual.squash = Math.max(ballVisual.squash, landing.kind === "boost" ? 1 : impact);
   createBurst(ballBody.position, landing.kind === "boost" ? 0x47e6cf : 0xffd166);
 }
 
 function syncBall() {
   ballMesh.position.set(ballBody.position.x, ballBody.position.y, ballBody.position.z);
-  ballMesh.quaternion.set(
-    ballBody.quaternion.x,
-    ballBody.quaternion.y,
-    ballBody.quaternion.z,
-    ballBody.quaternion.w,
-  );
+}
+
+function updateBallVisual(delta) {
+  syncBall();
+
+  const horizontalSpeed = Math.hypot(ballBody.velocity.x, ballBody.velocity.z);
+  if (horizontalSpeed > 0.03) {
+    reusable.rollAxis.set(ballBody.velocity.z, 0, -ballBody.velocity.x).normalize();
+    const grounded = state.elapsed - state.lastGroundedAt < 0.28;
+    const rollAmount = (horizontalSpeed * delta) / BALL_RADIUS;
+    reusable.rollStep.setFromAxisAngle(reusable.rollAxis, rollAmount * (grounded ? 1 : 0.42));
+    ballVisual.roll.premultiply(reusable.rollStep).normalize();
+  }
+
+  ballVisual.squash = Math.max(0, ballVisual.squash - delta * 4.8);
+  const impactSquash = ballVisual.squash * ballVisual.squash;
+  const riseStretch = THREE.MathUtils.clamp(ballBody.velocity.y / BOOST_BOUNCE, 0, 1) * 0.1;
+  const scaleY = THREE.MathUtils.clamp(1 - impactSquash * 0.28 + riseStretch, 0.72, 1.12);
+  const scaleXZ = THREE.MathUtils.clamp(1 + impactSquash * 0.18 - riseStretch * 0.04, 0.96, 1.18);
+
+  ballMesh.quaternion.copy(ballVisual.roll);
+  ballMesh.scale.set(scaleXZ, scaleY, scaleXZ);
+
+  const keepsContact = state.elapsed - state.lastGroundedAt < 0.16;
+  if (keepsContact) {
+    ballMesh.position.y += BALL_RADIUS * (scaleY - 1);
+  }
 }
 
 function updateTrack() {
@@ -569,8 +604,10 @@ function updateTrail(delta) {
 
 function idleMotion(seconds) {
   ballMesh.position.y = ballBody.position.y + Math.sin(seconds * 1.9) * 0.08;
-  ballMesh.rotation.x += 0.006;
-  ballMesh.rotation.z += 0.004;
+  reusable.rollStep.setFromAxisAngle(reusable.rollAxis.set(0.8, 0, 0.45).normalize(), 0.012);
+  ballVisual.roll.premultiply(reusable.rollStep).normalize();
+  ballMesh.quaternion.copy(ballVisual.roll);
+  ballMesh.scale.setScalar(1);
   updateBursts(1 / 60);
 }
 
@@ -768,10 +805,13 @@ function resetGame() {
   state.lastBounceAt = -10;
   state.lastGroundedAt = -10;
   state.boostQueuedAt = -10;
+  state.lastImpact = 0;
   state.rings = 0;
   state.score = 0;
   state.distance = 0;
   state.speed = BASE_SPEED;
+  ballVisual.roll.identity();
+  ballVisual.squash = 0;
 
   ballBody.position.set(0, 1.62, START_Z + 0.4);
   ballBody.velocity.set(0, 0, 0);
@@ -779,6 +819,8 @@ function resetGame() {
   ballBody.quaternion.set(0, 0, 0, 1);
   ballBody.wakeUp();
   syncBall();
+  ballMesh.quaternion.copy(ballVisual.roll);
+  ballMesh.scale.setScalar(1);
 
   for (let i = 0; i < 42; i += 1) {
     createNextSegment();
